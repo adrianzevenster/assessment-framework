@@ -9,7 +9,7 @@ common:
 
   ring:
     kvstore:
-      store: inmemory   # 🔥 THIS FIXES YOUR CRASH
+      store: inmemory
 
   storage:
     filesystem:
