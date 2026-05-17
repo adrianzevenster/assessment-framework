@@ -1,0 +1,15 @@
+{
+  "type": "record",
+  "name": "AssessmentResponse",
+  "namespace": "com.assessment.events",
+  "fields": [
+    {"name": "event_type", "type": "string"},
+    {"name": "event_time", "type": "string"},
+    {"name": "submission_id", "type": "string"},
+    {"name": "template_id", "type": "string"},
+    {"name": "respondent_id", "type": "string"},
+    {"name": "question_key", "type": "string"},
+    {"name": "answer_text", "type": ["null", "string"], "default": null},
+    {"name": "answer_numeric", "type": ["null", "int"], "default": null}
+  ]
+}
