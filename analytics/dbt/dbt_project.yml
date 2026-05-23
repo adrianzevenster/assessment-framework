@@ -1,0 +1,13 @@
+name: 'assessment_framework'
+version: '1.0.0'
+config-version: 2
+profile: 'assessment_framework'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+
+models:
+  assessment_framework:
+    marts:
+      +materialized: view
