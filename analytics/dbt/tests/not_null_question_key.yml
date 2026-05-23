@@ -1,0 +1,7 @@
+version: 2
+models:
+  - name: stg_fact_assessment_response
+    columns:
+      - name: question_key
+        tests:
+          - not_null
