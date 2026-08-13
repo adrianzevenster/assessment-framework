@@ -110,7 +110,7 @@ def _seed(
         for i, r in enumerate(responses or []):
             conn.execute(text("""
                 INSERT INTO responses (response_id, submission_id, question_key, answer_text, answer_json)
-                VALUES (:rid, :sid, :key, :text, :json::jsonb)
+                VALUES (:rid, :sid, :key, :text, CAST(:json AS JSONB))
                 ON CONFLICT DO NOTHING
             """), {
                 "rid":  f"{submission_id}-r{i}",
@@ -185,8 +185,11 @@ class TestBuildFeatureFrame:
         _seed(engine, responses=[])
         frame = build_feature_frame(engine)
         assert len(frame) == 1
-        for col in FEATURE_COLS:
+        # respondent_submission_count is 1 (one submission exists) — all other features are 0
+        response_cols = [c for c in FEATURE_COLS if c != "respondent_submission_count"]
+        for col in response_cols:
             assert frame.iloc[0][col] == 0
+        assert frame.iloc[0]["respondent_submission_count"] == 1
 
     def test_respondent_submission_count_aggregated(self, engine):
         from ml.features.feature_pipeline import build_feature_frame
