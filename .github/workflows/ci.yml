@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [master, develop]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check services/api ml
+
+  type-check:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install mypy types-requests
+      - run: pip install -r services/api/requirements.txt
+      - run: pip install -r ml/requirements.txt
+      - run: mypy services/api/app --ignore-missing-imports --strict-optional
+      - run: mypy ml --ignore-missing-imports --strict-optional
+
+  schema-validate:
+    name: Validate Avro schemas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install fastavro
+      - run: |
+          python - <<'EOF'
+          import json, glob, fastavro.schema
+          for path in glob.glob("schemas/*.avsc"):
+              with open(path) as f:
+                  schema = json.load(f)
+              fastavro.schema.parse_schema(schema)
+              print(f"OK: {path}")
+          EOF
+
+  dbt-compile:
+    name: dbt compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install dbt-trino
+      - name: dbt compile (parse only)
+        working-directory: analytics/dbt
+        run: dbt parse --profiles-dir .
+        env:
+          DBT_TARGET: dev
+
+  ml-tests:
+    name: ML unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest scikit-learn numpy pandas pyarrow sqlalchemy psycopg[binary]
+      - run: pytest ml/tests/test_extractor.py -v
+
+  integration-tests:
+    name: ML integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER:     assessment
+          POSTGRES_PASSWORD: assessment
+          POSTGRES_DB:       assessment
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest -r ml/requirements.txt
+      - run: pytest ml/tests/test_integration.py -v
+        env:
+          DATABASE_URL: postgresql+psycopg://assessment:assessment@localhost:5433/assessment

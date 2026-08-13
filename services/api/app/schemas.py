@@ -34,3 +34,9 @@ class SubmissionCreate(BaseModel):
     channel: str = "virtual"
     metadata_json: dict[str, Any] = Field(default_factory=dict)
     answers: list[AnswerPayload]
+
+
+class OutcomeCreate(BaseModel):
+    high_readiness: int  # 0 or 1
+    collected_by: str | None = None
+    notes: str | None = None

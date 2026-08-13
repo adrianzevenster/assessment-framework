@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "DTZ", "BLE"]
+ignore = [
+    "B008",   # FastAPI Depends() in default args — standard FastAPI idiom
+    "BLE001", # broad Exception catches are intentional for MLflow/DB degradation paths
+]
+
+[tool.ruff.lint.per-file-ignores]
+"services/api/migrations/*" = ["F401", "E501"]
+"services/api/scripts/*" = ["E501"]
+"ml/tests/*" = ["E501"]

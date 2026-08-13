@@ -1,7 +1,7 @@
 import json
-from confluent_kafka import Producer
 
 from app.config import settings
+from confluent_kafka import Producer
 
 producer = Producer({"bootstrap.servers": settings.redpanda_brokers, "client.id": "assessment-api"})
 

@@ -14,3 +14,8 @@ opentelemetry-instrumentation-fastapi==0.52b1
 opentelemetry-instrumentation-sqlalchemy==0.52b1
 prometheus-client==0.21.1
 python-ulid==3.0.0
+httpx==0.28.1
+mlflow==2.22.0
+scikit-learn==1.6.1
+numpy>=1.24
+boto3

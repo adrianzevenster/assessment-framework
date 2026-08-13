@@ -1,0 +1,106 @@
+version: 2
+
+models:
+  - name: stg_fact_assessment_response
+    description: Conformed response facts from the Silver Iceberg layer
+    columns:
+      - name: submission_id
+        tests: [not_null]
+      - name: template_id
+        tests: [not_null]
+      - name: respondent_id
+        tests: [not_null]
+      - name: question_key
+        tests: [not_null]
+      - name: event_time
+        tests: [not_null]
+
+  - name: stg_fact_assessment_submission
+    description: Conformed submission facts from the Silver Iceberg layer
+    columns:
+      - name: submission_id
+        tests: [not_null, unique]
+      - name: template_id
+        tests: [not_null]
+      - name: respondent_id
+        tests: [not_null]
+      - name: channel
+        tests:
+          - not_null
+          - accepted_values:
+              values: [virtual, email, api]
+      - name: event_time
+        tests: [not_null]
+
+  - name: mart_assessment_overview
+    description: Question-level response summary rolled up per template
+    columns:
+      - name: template_id
+        tests: [not_null]
+      - name: question_key
+        tests: [not_null]
+      - name: responses
+        tests: [not_null]
+
+  - name: mart_submission_velocity
+    description: Per-respondent submission cadence and activity window
+    columns:
+      - name: respondent_id
+        tests: [not_null]
+      - name: template_id
+        tests: [not_null]
+      - name: submission_count
+        tests: [not_null]
+
+  - name: mart_section_maturity
+    description: Average maturity score per assessment section across all submissions
+    columns:
+      - name: template_id
+        tests: [not_null]
+      - name: section_key
+        tests:
+          - not_null
+          - accepted_values:
+              values: [Strategy, Platform, Maturity, Observability]
+      - name: submission_count
+        tests: [not_null]
+
+  - name: mart_question_completion
+    description: Completion rate and response distribution per question
+    columns:
+      - name: template_id
+        tests: [not_null]
+      - name: question_key
+        tests: [not_null]
+      - name: completion_rate
+        tests: [not_null]
+
+  - name: mart_answer_entropy
+    description: Shannon entropy of answer distributions per question (higher = more diverse)
+    columns:
+      - name: template_id
+        tests: [not_null]
+      - name: question_key
+        tests: [not_null]
+      - name: unique_values
+        tests: [not_null]
+
+  - name: mart_ml_features
+    description: Offline feature store snapshot — ML readiness features from Iceberg Gold. Mirrors ml/features/extractor.py::FEATURE_COLS (9 features, incremental materialization).
+    columns:
+      - name: submission_id
+        tests: [not_null, unique]
+      - name: respondent_id
+        tests: [not_null]
+      - name: template_id
+        tests: [not_null]
+      - name: has_ml_strategy
+        tests: [not_null]
+      - name: has_ci_cd
+        tests: [not_null]
+      - name: answered_question_count
+        tests: [not_null]
+      - name: respondent_submission_count
+        tests: [not_null]
+      - name: days_since_first_submission
+        tests: [not_null]

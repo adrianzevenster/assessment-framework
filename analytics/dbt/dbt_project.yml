@@ -9,5 +9,9 @@ test-paths: ["tests"]
 
 models:
   assessment_framework:
+    staging:
+      +materialized: view
     marts:
       +materialized: view
+      mart_ml_features:
+        +materialized: incremental
