@@ -60,7 +60,10 @@ def main() -> None:
         print(f"Champion:   v{champion.version}  ROC-AUC={champion_roc:.3f}  stage=Production")
 
         if challenger_roc <= champion_roc:
-            print(f"Challenger does not improve on champion ({challenger_roc:.3f} <= {champion_roc:.3f}). Not promoting.")
+            print(
+                f"Challenger does not improve on champion "
+                f"({challenger_roc:.3f} <= {champion_roc:.3f}). Not promoting."
+            )
             sys.exit(0)
 
         client.transition_model_version_stage(MODEL_NAME, champion.version, "Archived")

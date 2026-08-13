@@ -7,10 +7,9 @@ Imports from ml/ via the ./ml:/app/ml volume mount (see docker-compose.yml).
 """
 import logging
 
-from sqlalchemy import text
-
 from app.db import SessionLocal
 from app.models import Response, Submission
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 

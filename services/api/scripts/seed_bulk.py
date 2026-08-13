@@ -2,9 +2,8 @@
 Seeds 20 synthetic submissions covering the full maturity spectrum.
 Run: docker compose exec -e PYTHONPATH=/app api python scripts/seed_bulk.py
 """
-import random
 from app.db import SessionLocal
-from app.schemas import SubmissionCreate, AnswerPayload
+from app.schemas import AnswerPayload, SubmissionCreate
 from app.services import submit_assessment
 
 TEMPLATE_ID = "01KX0J5J5C0V5JHKYXY9MXBZJJ"

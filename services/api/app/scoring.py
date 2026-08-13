@@ -1,7 +1,6 @@
+from app.models import Response, Submission
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-
-from app.models import Response, Submission
 
 _WEIGHTS: dict[str, dict] = {
     "ml_strategy":         {"type": "boolean",          "max": 15},

@@ -54,6 +54,10 @@ ml-promote:
 	MLFLOW_TRACKING_URI=http://localhost:5000 \
 	python -m ml.promotion.promote
 
+ml-rollback:
+	MLFLOW_TRACKING_URI=http://localhost:5000 \
+	python -m ml.promotion.rollback
+
 ml-check:
 	DATABASE_URL=postgresql+psycopg://assessment:assessment@localhost:5433/assessment \
 	python -m ml.checks.label_quality

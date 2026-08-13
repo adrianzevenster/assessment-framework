@@ -1,5 +1,4 @@
 """Unit tests for canonical feature extraction — no database required."""
-import pytest
 
 from ml.features.extractor import (
     FEATURE_COLS,

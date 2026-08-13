@@ -1,19 +1,19 @@
 import logging
 import os
+import time
 
 import httpx
 import numpy as np
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func
-from sqlalchemy.orm import Session
-
 from app.db import Base, engine, get_db
 from app.labeler import label_submission
 from app.schemas import OutcomeCreate, SubmissionCreate, TemplateCreate
 from app.scoring import get_analytics_summary, get_submission_score
 from app.services import create_template, submit_assessment
 from app.telemetry import configure_telemetry
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 try:
     from ml.features.extractor import (
@@ -168,11 +168,19 @@ def predict_readiness(submission_id: str, db: Session = Depends(get_db)):
     vec  = features_to_vector(feat)
 
     try:
-        model = _load_model()
-        X = np.array([vec])
+        model, model_version = _model_cache.get()
+        X    = np.array([vec])
         prob = float(model.predict_proba(X)[0][1])
-        clf = model.named_steps["clf"]
-        coef = clf.coef_[0].tolist()
+
+        # Feature contributions from the inner LR (works for both plain Pipeline and CalibratedClassifierCV)
+        try:
+            inner = getattr(model, "estimator", model)
+            clf   = inner.named_steps["clf"]
+            base  = getattr(clf, "base_estimator", getattr(clf, "estimator", clf))
+            coef  = base.coef_[0].tolist()
+        except Exception:
+            coef = [0.0] * len(FEATURE_COLS)
+
         contributions = sorted(
             [
                 {"feature": FEATURE_COLS[i], "value": vec[i], "weight": round(coef[i], 3)}
@@ -181,6 +189,9 @@ def predict_readiness(submission_id: str, db: Session = Depends(get_db)):
             key=lambda x: abs(x["weight"]),
             reverse=True,
         )
+
+        _log_prediction(db, submission_id, prob, prob >= 0.5, model_version or "unknown")
+
         return {
             "probability":    round(prob, 3),
             "prediction":     prob >= 0.5,
@@ -197,18 +208,85 @@ def predict_readiness(submission_id: str, db: Session = Depends(get_db)):
         }
 
 
-_MLFLOW_URL = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
-_model_cache = None
+_MLFLOW_URL       = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+_MODEL_CACHE_TTL  = int(os.getenv("MODEL_CACHE_TTL_SECONDS", "300"))  # 5-minute TTL
+
+_CREATE_PREDICTION_LOG = """
+CREATE TABLE IF NOT EXISTS prediction_log (
+    id             BIGSERIAL    PRIMARY KEY,
+    submission_id  VARCHAR(26)  NOT NULL,
+    model_name     TEXT         NOT NULL DEFAULT 'readiness-classifier',
+    model_version  TEXT         NOT NULL,
+    probability    REAL         NOT NULL,
+    prediction     SMALLINT     NOT NULL,
+    predicted_at   TIMESTAMP    NOT NULL DEFAULT now(),
+    actual_label   SMALLINT
+);
+CREATE INDEX IF NOT EXISTS idx_prediction_log_submission_id ON prediction_log(submission_id);
+CREATE INDEX IF NOT EXISTS idx_prediction_log_predicted_at  ON prediction_log(predicted_at);
+"""
 
 
-def _load_model():
-    global _model_cache
-    if _model_cache is None:
+class _ModelCache:
+    """Thread-safe TTL cache that reloads when the Production version changes or TTL expires."""
+
+    def __init__(self) -> None:
+        self._model: object | None = None
+        self._version: str | None = None
+        self._loaded_at: float = 0.0
+
+    def get(self) -> tuple:
+        """Return (model, version_str). Reloads from MLflow if stale or version changed."""
         import mlflow
         import mlflow.sklearn
+
         mlflow.set_tracking_uri(_MLFLOW_URL)
-        _model_cache = mlflow.sklearn.load_model("models:/readiness-classifier/latest")
-    return _model_cache
+        age = time.monotonic() - self._loaded_at
+
+        if self._model is None or age > _MODEL_CACHE_TTL:
+            try:
+                client = mlflow.tracking.MlflowClient()
+                versions = client.get_latest_versions("readiness-classifier", stages=["Production"])
+                if not versions:
+                    raise RuntimeError("No Production model registered. Run: make ml-promote")
+                current_version = versions[0].version
+                if current_version != self._version:
+                    self._model = mlflow.sklearn.load_model("models:/readiness-classifier/Production")
+                    logger.info("Loaded readiness-classifier v%s", current_version)
+                    self._version = current_version
+                self._loaded_at = time.monotonic()
+            except Exception:
+                if self._model is None:
+                    raise
+                # TTL expired but MLflow is unreachable — serve stale model rather than fail
+                logger.warning("MLflow unreachable; serving cached v%s", self._version)
+
+        return self._model, self._version
+
+
+_model_cache = _ModelCache()
+
+
+def _log_prediction(
+    db: Session,
+    submission_id: str,
+    probability: float,
+    prediction: bool,
+    model_version: str,
+) -> None:
+    from sqlalchemy import text as _sqlt
+    try:
+        db.execute(_sqlt(_CREATE_PREDICTION_LOG))
+        db.execute(
+            _sqlt("""
+                INSERT INTO prediction_log (submission_id, model_version, probability, prediction)
+                VALUES (:sid, :ver, :prob, :pred)
+            """),
+            {"sid": submission_id, "ver": model_version, "prob": probability, "pred": int(prediction)},
+        )
+        db.commit()
+    except Exception as exc:
+        logger.warning("Failed to log prediction for %s: %s", submission_id, exc)
 
 
 @app.get("/analytics/ml-runs")
@@ -303,8 +381,9 @@ def feature_drift(db: Session = Depends(get_db)):
     try:
         import pandas as pd
         from scipy.stats import ks_2samp
-        from ml.features.feature_pipeline import build_feature_frame
         from sqlalchemy import create_engine as _ce
+
+        from ml.features.feature_pipeline import build_feature_frame
         reference = pd.read_parquet(ref_path)
         cur_engine = _ce(os.getenv("DATABASE_URL", "postgresql+psycopg://assessment:assessment@postgres:5432/assessment"))
         current = build_feature_frame(cur_engine)
@@ -353,12 +432,16 @@ def feature_stats(db: Session = Depends(get_db)):
         ]
         if not counts:
             return {"mean": 0, "min": 0, "max": 0, "type": "count", "n": 0}
-        return {"mean": round(sum(counts) / len(counts), 2), "min": min(counts), "max": max(counts), "type": "count", "n": len(counts)}
+        return {
+            "mean": round(sum(counts) / len(counts), 2),
+            "min": min(counts), "max": max(counts),
+            "type": "count", "n": len(counts),
+        }
 
     def cat_stat(key: str, score_map: dict) -> dict:
         rows = db.query(Response).filter(Response.question_key == key).all()
         scores = [score_map.get(r.answer_text or "", 0) for r in rows]
-        dist = {}
+        dist: dict[str, int] = {}
         for r in rows:
             label = r.answer_text or "—"
             dist[label] = dist.get(label, 0) + 1
@@ -371,15 +454,24 @@ def feature_stats(db: Session = Depends(get_db)):
 
     try:
         row = db.execute(sqlt("SELECT COUNT(*), COALESCE(SUM(high_readiness),0) FROM labeled_outcomes")).fetchone()
-        labeled_n, high_n = int(row[0]), int(row[1])
+        if row is None:
+            labeled_n, high_n = 0, 0
+        else:
+            labeled_n, high_n = int(row[0]), int(row[1])
     except Exception:
         labeled_n, high_n = 0, 0
 
     try:
         from ml.features.extractor import PROD_SCALE_SCORE, TRACKING_SCORE  # type: ignore[import]
     except ImportError:
-        TRACKING_SCORE = {"MLflow + model registry": 3, "Weights & Biases / Neptune": 2, "Custom solution": 1, "Notebooks / ad-hoc": 0}  # type: ignore[assignment]
-        PROD_SCALE_SCORE = {"10+ models in production": 3, "1–9 models in production": 2, "Proof of concept / pilot": 1, "Not yet deployed": 0}  # type: ignore[assignment]
+        TRACKING_SCORE = {  # type: ignore[assignment]
+            "MLflow + model registry": 3, "Weights & Biases / Neptune": 2,
+            "Custom solution": 1, "Notebooks / ad-hoc": 0,
+        }
+        PROD_SCALE_SCORE = {  # type: ignore[assignment]
+            "10+ models in production": 3, "1–9 models in production": 2,
+            "Proof of concept / pilot": 1, "Not yet deployed": 0,
+        }
 
     return {
         "total_submissions":   total,
@@ -396,3 +488,43 @@ def feature_stats(db: Session = Depends(get_db)):
             "prod_scale_score":          cat_stat("prod_scale", PROD_SCALE_SCORE),
         },
     }
+
+
+@app.get("/analytics/prediction-performance")
+def prediction_performance(db: Session = Depends(get_db)):
+    """Per-model-version prediction counts and accuracy vs heuristic labels."""
+    from sqlalchemy import text as sqlt
+    try:
+        db.execute(sqlt(_CREATE_PREDICTION_LOG))
+        db.commit()
+        rows = db.execute(sqlt("""
+            SELECT
+                p.model_version,
+                COUNT(*)                                                        AS total_predictions,
+                ROUND(AVG(p.probability)::numeric, 3)                           AS avg_probability,
+                COUNT(l.high_readiness)                                         AS labeled_count,
+                ROUND(
+                    AVG(
+                        CASE WHEN l.high_readiness IS NOT NULL
+                            THEN CASE WHEN p.prediction = l.high_readiness THEN 1.0 ELSE 0.0 END
+                        END
+                    )::numeric, 3
+                )                                                               AS accuracy_vs_label
+            FROM prediction_log p
+            LEFT JOIN labeled_outcomes l ON p.submission_id = l.submission_id
+            GROUP BY p.model_version
+            ORDER BY MAX(p.predicted_at) DESC
+        """)).fetchall()
+        return [
+            {
+                "model_version":      r[0],
+                "total_predictions":  r[1],
+                "avg_probability":    float(r[2]) if r[2] is not None else None,
+                "labeled_count":      r[3],
+                "accuracy_vs_label":  float(r[4]) if r[4] is not None else None,
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        logger.warning("prediction-performance query failed: %s", exc)
+        return []

@@ -1,5 +1,5 @@
 from app.db import SessionLocal
-from app.schemas import TemplateCreate, QuestionPayload
+from app.schemas import QuestionPayload, TemplateCreate
 from app.services import create_template
 
 payload = TemplateCreate(

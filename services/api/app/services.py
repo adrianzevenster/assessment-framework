@@ -1,10 +1,10 @@
-from datetime import datetime
-import ulid
-from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 
+import ulid
 from app import models
-from app.kafka import publish
 from app.config import settings
+from app.kafka import publish
+from sqlalchemy.orm import Session
 
 
 def create_template(db: Session, payload):
@@ -53,12 +53,12 @@ def submit_assessment(db: Session, payload):
             answer_text=answer.answer_text,
             answer_numeric=answer.answer_numeric,
             answer_json=answer.answer_json if isinstance(answer.answer_json, dict) else {"value": answer.answer_json},
-            updated_at=datetime.utcnow(),
+            updated_at=datetime.now(tz=timezone.utc),
         )
         db.add(response)
         response_events.append({
             "event_type": "response_recorded",
-            "event_time": datetime.utcnow().isoformat(),
+            "event_time": datetime.now(tz=timezone.utc).isoformat(),
             "submission_id": submission.submission_id,
             "template_id": payload.template_id,
             "respondent_id": payload.respondent_id,
@@ -72,7 +72,7 @@ def submit_assessment(db: Session, payload):
 
     publish(settings.submission_topic, submission.submission_id, {
         "event_type": "assessment_submitted",
-        "event_time": datetime.utcnow().isoformat(),
+        "event_time": datetime.now(tz=timezone.utc).isoformat(),
         "submission_id": submission.submission_id,
         "template_id": payload.template_id,
         "respondent_id": payload.respondent_id,

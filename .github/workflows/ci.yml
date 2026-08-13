@@ -28,7 +28,9 @@ jobs:
           python-version: "3.12"
       - run: pip install mypy types-requests
       - run: pip install -r services/api/requirements.txt
+      - run: pip install -r ml/requirements.txt
       - run: mypy services/api/app --ignore-missing-imports --strict-optional
+      - run: mypy ml --ignore-missing-imports --strict-optional
 
   schema-validate:
     name: Validate Avro schemas
@@ -73,4 +75,31 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pytest scikit-learn numpy pandas pyarrow sqlalchemy psycopg[binary]
-      - run: pytest ml/tests/ -v
+      - run: pytest ml/tests/test_extractor.py -v
+
+  integration-tests:
+    name: ML integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER:     assessment
+          POSTGRES_PASSWORD: assessment
+          POSTGRES_DB:       assessment
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest -r ml/requirements.txt
+      - run: pytest ml/tests/test_integration.py -v
+        env:
+          DATABASE_URL: postgresql+psycopg://assessment:assessment@localhost:5433/assessment
