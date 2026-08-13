@@ -1,7 +1,7 @@
 import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, current_timestamp, from_json
-from pyspark.sql.types import StructField, StructType, StringType, IntegerType, MapType
+from pyspark.sql.functions import col, current_timestamp, from_json, sha2, to_timestamp
+from pyspark.sql.types import StructField, StructType, StringType, IntegerType
 
 BROKERS = os.getenv("REDPANDA_BROKERS", "localhost:19092")
 WAREHOUSE = os.getenv("ICEBERG_WAREHOUSE", "s3a://lakehouse/warehouse")
@@ -14,7 +14,6 @@ submission_schema = StructType([
     StructField("respondent_id", StringType()),
     StructField("channel", StringType()),
     StructField("answer_count", IntegerType()),
-    StructField("metadata", MapType(StringType(), StringType())),
 ])
 
 response_schema = StructType([
@@ -26,7 +25,7 @@ response_schema = StructType([
     StructField("question_key", StringType()),
     StructField("answer_text", StringType()),
     StructField("answer_numeric", IntegerType()),
-    StructField("answer_json", MapType(StringType(), StringType())),
+    StructField("answer_json", StringType()),
 ])
 
 spark = (
@@ -45,22 +44,21 @@ spark = (
 
 spark.sql("CREATE NAMESPACE IF NOT EXISTS demo.bronze")
 spark.sql("CREATE NAMESPACE IF NOT EXISTS demo.silver")
+spark.sql("CREATE NAMESPACE IF NOT EXISTS demo.gold")
 
-submissions_raw = (
-    spark.readStream.format("kafka")
-    .option("kafka.bootstrap.servers", BROKERS)
-    .option("subscribe", "assessment.submissions")
-    .option("startingOffsets", "earliest")
-    .load()
-)
 
-responses_raw = (
-    spark.readStream.format("kafka")
-    .option("kafka.bootstrap.servers", BROKERS)
-    .option("subscribe", "assessment.responses")
-    .option("startingOffsets", "earliest")
-    .load()
-)
+def read_topic(topic: str):
+    return (
+        spark.readStream.format("kafka")
+        .option("kafka.bootstrap.servers", BROKERS)
+        .option("subscribe", topic)
+        .option("startingOffsets", "earliest")
+        .load()
+    )
+
+
+submissions_raw = read_topic("assessment.submissions")
+responses_raw = read_topic("assessment.responses")
 
 bronze_submissions = submissions_raw.select(
     col("key").cast("string").alias("message_key"),
@@ -74,15 +72,40 @@ bronze_responses = responses_raw.select(
     current_timestamp().alias("ingested_at"),
 )
 
-silver_submissions = submissions_raw.select(from_json(col("value").cast("string"), submission_schema).alias("data")).select("data.*")
-silver_responses = responses_raw.select(from_json(col("value").cast("string"), response_schema).alias("data")).select("data.*")
+silver_submissions = (
+    submissions_raw
+    .select(from_json(col("value").cast("string"), submission_schema).alias("d"))
+    .select("d.*")
+    .withColumn("event_time_ts", to_timestamp(col("event_time")))
+    .withWatermark("event_time_ts", "1 hour")
+    .dropDuplicates(["submission_id"])
+    .withColumn("respondent_id", sha2(col("respondent_id"), 256))
+)
 
-bronze_submissions.writeStream     .format("iceberg")     .outputMode("append")     .option("checkpointLocation", "/tmp/checkpoints/bronze_submissions")     .toTable("demo.bronze.assessment_submissions_raw")
+silver_responses = (
+    responses_raw
+    .select(from_json(col("value").cast("string"), response_schema).alias("d"))
+    .select("d.*")
+    .withColumn("event_time_ts", to_timestamp(col("event_time")))
+    .withWatermark("event_time_ts", "1 hour")
+    .dropDuplicates(["submission_id", "question_key"])
+    .withColumn("respondent_id", sha2(col("respondent_id"), 256))
+)
 
-bronze_responses.writeStream.format("iceberg")     .outputMode("append")     .option("checkpointLocation", "/tmp/checkpoints/bronze_responses")     .toTable("demo.bronze.assessment_responses_raw")
 
-silver_submissions.writeStream     .format("iceberg")     .outputMode("append")     .option("checkpointLocation", "/tmp/checkpoints/silver_submissions")     .toTable("demo.silver.fact_assessment_submission")
+def write_stream(df, table: str, checkpoint: str):
+    return (
+        df.writeStream
+        .format("iceberg")
+        .outputMode("append")
+        .option("checkpointLocation", checkpoint)
+        .toTable(table)
+    )
 
-query = silver_responses.writeStream     .format("iceberg")     .outputMode("append")     .option("checkpointLocation", "/tmp/checkpoints/silver_responses")     .toTable("demo.silver.fact_assessment_response")
 
-query.awaitTermination()
+write_stream(bronze_submissions, "demo.bronze.assessment_submissions_raw", "/tmp/checkpoints/bronze_submissions")
+write_stream(bronze_responses, "demo.bronze.assessment_responses_raw", "/tmp/checkpoints/bronze_responses")
+write_stream(silver_submissions, "demo.silver.fact_assessment_submission", "/tmp/checkpoints/silver_submissions")
+write_stream(silver_responses, "demo.silver.fact_assessment_response", "/tmp/checkpoints/silver_responses")
+
+spark.streams.awaitAnyTermination()

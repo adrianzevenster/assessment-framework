@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    ports: ["5432:5432"]
+    ports: ["5433:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -48,7 +48,7 @@ services:
       - --advertise-pandaproxy-addr=PLAINTEXT://redpanda:8082
       - --rpc-addr=0.0.0.0:33145
       - --advertise-rpc-addr=redpanda:33145
-    ports: ["19092:19092", "8082:8082", "9644:9644"]
+    ports: ["19092:19092", "18082:8082", "9644:9644"]
     volumes:
       - redpanda_data:/var/lib/redpanda/data
 
@@ -67,10 +67,15 @@ services:
       DATABASE_URL: postgresql+psycopg://assessment:assessment@postgres:5432/assessment
       REDPANDA_BROKERS: redpanda:9092
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
     ports: ["8000:8000"]
-    depends_on: [postgres, redpanda, otel-collector]
+    depends_on: [postgres, redpanda, otel-collector, mlflow]
     volumes:
       - ./services/api:/app
+      - ./ml:/app/ml:ro
 
   ui:
     build: ./apps/ui
@@ -93,10 +98,19 @@ services:
     volumes:
       - ./services/spark:/app
 
+  nessie:
+    image: ghcr.io/projectnessie/nessie:0.104.0
+    ports: ["19120:19120"]
+    environment:
+      QUARKUS_DATASOURCE_DB_KIND: in-memory
+
   trino:
     image: trinodb/trino:460
     ports: ["8080:8080"]
-    depends_on: [minio]
+    depends_on: [minio, nessie]
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
     volumes:
       - ./infra/trino/catalog:/etc/trino/catalog:ro
       - ./infra/trino/config.properties:/etc/trino/config.properties:ro
@@ -139,6 +153,11 @@ services:
     image: grafana/grafana:11.6.0
     ports: ["3000:3000"]
     depends_on: [prometheus, loki, tempo]
+    environment:
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_COOKIE_SAMESITE: disabled
     volumes:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
@@ -150,8 +169,26 @@ services:
     volumes:
       - ./infra/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
 
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.22.0
+    command: >
+      /bin/sh -c "pip install psycopg2-binary --quiet &&
+      python3 -c \"import psycopg2, psycopg2.extensions; conn=psycopg2.connect('postgresql://assessment:assessment@postgres:5432/assessment'); conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT); cur=conn.cursor(); cur.execute(\\\"SELECT 1 FROM pg_database WHERE datname='mlflow'\\\"); r=cur.fetchone(); r or cur.execute('CREATE DATABASE mlflow OWNER assessment'); cur.close(); conn.close()\" &&
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri postgresql://assessment:assessment@postgres:5432/mlflow
+      --default-artifact-root s3://lakehouse/mlflow"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    ports: ["5000:5000"]
+    depends_on: [postgres, minio]
+
 volumes:
   postgres_data:
   minio_data:
   redpanda_data:
   grafana_data:
+  trino_catalog:
