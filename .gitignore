@@ -1,0 +1,17 @@
+c.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+
+# Node
+apps/ui/node_modules/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated ML artifacts
+ml/features/feature_frame.parquet

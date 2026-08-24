@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "AssessmentSubmission",
+  "namespace": "com.assessment.events",
+  "fields": [
+    {"name": "event_type", "type": "string"},
+    {"name": "event_time", "type": "string"},
+    {"name": "submission_id", "type": "string"},
+    {"name": "template_id", "type": "string"},
+    {"name": "respondent_id", "type": "string"},
+    {"name": "channel", "type": "string"},
+    {"name": "answer_count", "type": "int"}
+  ]
+}
