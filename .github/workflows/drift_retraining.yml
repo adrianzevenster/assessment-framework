@@ -1,0 +1,98 @@
+name: Weekly drift check
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Every Monday 06:00 UTC
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  drift-check:
+    name: Feature drift detection
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ML dependencies
+        run: pip install -r ml/requirements.txt
+
+      - name: Download reference frame from MLflow
+        run: |
+          python - <<'EOF'
+          import os, sys
+          import mlflow
+          from pathlib import Path
+
+          tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+          if not tracking_uri:
+              print("MLFLOW_TRACKING_URI not set — skipping reference frame download")
+              sys.exit(0)
+
+          mlflow.set_tracking_uri(tracking_uri)
+          client = mlflow.tracking.MlflowClient()
+          versions = client.get_latest_versions("readiness-classifier", stages=["Production"])
+          if not versions:
+              print("No Production model — nothing to compare against")
+              sys.exit(0)
+
+          run_id = versions[0].run_id
+          out = Path("ml/features")
+          out.mkdir(parents=True, exist_ok=True)
+          try:
+              client.download_artifacts(run_id, "reference_frame/feature_frame.parquet", str(out))
+              print(f"Downloaded reference frame from run {run_id[:8]}")
+          except Exception as exc:
+              print(f"Could not download reference frame: {exc}")
+              sys.exit(0)
+          EOF
+        env:
+          MLFLOW_TRACKING_URI:    ${{ secrets.PROD_MLFLOW_URL }}
+          MLFLOW_S3_ENDPOINT_URL: ${{ secrets.PROD_MINIO_URL }}
+          AWS_ACCESS_KEY_ID:      ${{ secrets.PROD_MINIO_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY:  ${{ secrets.PROD_MINIO_SECRET_KEY }}
+
+      - name: Run drift detection
+        id: drift
+        run: python -m ml.monitoring.drift
+        env:
+          DATABASE_URL:         ${{ secrets.PROD_DATABASE_URL }}
+          FEATURE_OUTPUT_PATH:  ml/features/feature_frame.parquet
+        continue-on-error: true
+
+      - name: Open GitHub issue if drift detected
+        if: steps.drift.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Feature drift detected — retrain required';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              state: 'open',
+              labels: 'ml,drift',
+            });
+            if (issues.some(i => i.title === title)) {
+              console.log('Open drift issue already exists — skipping creation');
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title,
+              body: [
+                '## Drift alert',
+                '',
+                'The weekly drift check detected feature distribution shift vs the training reference.',
+                '',
+                '**Action required:** run `make ml-relabel-and-retrain` against the production database, ',
+                'then `make ml-promote` to deploy the new model.',
+                '',
+                `Triggered by commit ${context.sha} on ${new Date().toISOString().split('T')[0]}`,
+              ].join('\n'),
+              labels: ['ml', 'drift'],
+            });
